@@ -1,133 +1,129 @@
 """
-Flask API for Price Monitoring System
-This API hosts your ETL script and handles webhooks from Supabase
+Kobo Webhook Receiver API
+Receives data from Kobo and inserts into Supabase
 """
 from flask import Flask, request, jsonify
-import subprocess
-import logging
+import psycopg2
 import os
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
+from datetime import datetime
 
 app = Flask(__name__)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Database config
+DB_HOST = "aws-1-ap-southeast-1.pooler.supabase.com"
+DB_NAME = "postgres"
+DB_USER = "postgres.eokvgfohmbcoyisuptdp"
+DB_PASSWORD = "butcheableng"
+DB_PORT = "5432"
+
+# Currency conversion
+KHR_TO_USD = 4000
+
+def get_db_connection():
+    """Create database connection"""
+    return psycopg2.connect(
+        host=DB_HOST,
+        database=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        port=DB_PORT
+    )
+
+@app.route('/webhook', methods=['POST'])
+def kobo_webhook():
+    """
+    Endpoint that Kobo calls when a new submission is made
+    """
+    try:
+        # Get data from Kobo webhook
+        data = request.json
+        print(f"📥 Received webhook at {datetime.now()}")
+        print(f"📦 Data: {data}")
+        
+        # Extract fields (adjust these based on your Kobo form)
+        submission = {
+            'submission_time': datetime.now(),
+            'survey_date': data.get('enter_date'),
+            'province': data.get('province'),
+            'outlet_type': data.get('outlet_types'),
+            'product_type': data.get('product_type'),
+            'brand': data.get('brand'),
+            'sku': data.get('sku'),
+            'package_type': data.get('package'),
+            'unit_per_ctn': data.get('unit_per_ctn'),
+            'price_ws_buy_ctn': data.get('price_ws_buy'),
+            'price_ws_sell_ctn': data.get('price_ws_sell'),
+            'price_rt_sell_unit': data.get('price_rt_sell')
+        }
+        
+        # Convert KHR to USD if needed
+        if submission['price_rt_sell_unit']:
+            try:
+                price_khr = float(submission['price_rt_sell_unit'])
+                submission['price_rt_sell_unit'] = round(price_khr / KHR_TO_USD, 2)
+                print(f"   💱 Converted: {price_khr} KHR → ${submission['price_rt_sell_unit']} USD")
+            except:
+                pass
+        
+        # Insert into database
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        insert_query = """
+        INSERT INTO price_monitoring (
+            submission_time, survey_date, province, outlet_type,
+            product_type, brand, sku, package_type,
+            unit_per_ctn, price_ws_buy_ctn, price_ws_sell_ctn, price_rt_sell_unit
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        
+        cursor.execute(insert_query, (
+            submission['submission_time'],
+            submission['survey_date'],
+            submission['province'],
+            submission['outlet_type'],
+            submission['product_type'],
+            submission['brand'],
+            submission['sku'],
+            submission['package_type'],
+            submission['unit_per_ctn'],
+            submission['price_ws_buy_ctn'],
+            submission['price_ws_sell_ctn'],
+            submission['price_rt_sell_unit']
+        ))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        print(f"   ✅ Inserted: {submission['product_type']} - {submission['brand']}")
+        
+        return jsonify({"status": "success", "message": "Data inserted"}), 200
+        
+    except Exception as e:
+        print(f"   ❌ Error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint - verifies API is running"""
-    return jsonify({
-        "status": "healthy",
-        "message": "Price Monitoring API is running"
-    }), 200
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """
-    Webhook endpoint that triggers your ETL process
-    Called by Supabase when new data is inserted
-    """
-    try:
-        # Get the webhook payload
-        payload = request.json
-        logger.info(f"Webhook received: {payload}")
-        
-        # Log the event type
-        event_type = payload.get('type', 'unknown') if payload else 'unknown'
-        logger.info(f"Processing {event_type} event")
-        
-        # Run your existing ETL script
-        logger.info("Starting ETL script...")
-        result = subprocess.run(
-            ['python', 'run_pandas_etl.py'],
-            capture_output=True,
-            text=True,
-            timeout=120  # 2 minute timeout
-        )
-        
-        if result.returncode == 0:
-            logger.info("✅ ETL script completed successfully")
-            logger.debug(f"Output: {result.stdout}")
-            return jsonify({
-                "status": "success",
-                "message": "ETL completed"
-            }), 200
-        else:
-            logger.error(f"❌ ETL script failed: {result.stderr}")
-            return jsonify({
-                "status": "error",
-                "message": result.stderr
-            }), 500
-            
-    except subprocess.TimeoutExpired:
-        logger.error("❌ ETL script timed out after 120 seconds")
-        return jsonify({
-            "status": "error",
-            "message": "ETL script timeout"
-        }), 500
-    except Exception as e:
-        logger.error(f"❌ Webhook error: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-@app.route('/trigger-etl', methods=['POST'])
-def trigger_etl():
-    """
-    Manual trigger endpoint - runs ETL immediately
-    Useful for testing or manual updates
-    """
-    try:
-        logger.info("Manual ETL trigger received")
-        
-        result = subprocess.run(
-            ['python', 'run_pandas_etl.py'],
-            capture_output=True,
-            text=True
-        )
-        
-        if result.returncode == 0:
-            logger.info("✅ Manual ETL completed successfully")
-            return jsonify({
-                "status": "success",
-                "output": result.stdout
-            }), 200
-        else:
-            logger.error(f"❌ Manual ETL failed: {result.stderr}")
-            return jsonify({
-                "status": "error",
-                "error": result.stderr
-            }), 500
-            
-    except Exception as e:
-        logger.error(f"❌ Manual trigger error: {str(e)}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
+    """Health check endpoint"""
+    return jsonify({"status": "healthy", "message": "API is running"}), 200
 
 @app.route('/test', methods=['GET'])
 def test():
-    """Simple test endpoint"""
+    """Test endpoint"""
     return jsonify({
-        "message": "API is working!",
+        "status": "ok",
+        "message": "Webhook receiver is ready",
         "endpoints": {
+            "/webhook": "POST - Receive Kobo submissions",
             "/health": "GET - Health check",
-            "/test": "GET - This message",
-            "/webhook": "POST - Webhook endpoint",
-            "/trigger-etl": "POST - Manual ETL trigger"
+            "/test": "GET - Test endpoint"
         }
     }), 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    logger.info(f"Starting Price Monitoring API on port {port}")
+    print(f"🚀 Starting Kobo Webhook Receiver on port {port}")
+    print(f"   Webhook URL: http://localhost:{port}/webhook")
     app.run(host='0.0.0.0', port=port, debug=False)

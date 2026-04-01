@@ -19,7 +19,7 @@ KOBO_URL = f"https://kf.kobotoolbox.org/api/v2/assets/{ASSET_ID}/data/"
 # -------------------------------------------------
 DB_HOST = "aws-1-ap-southeast-1.pooler.supabase.com"
 DB_NAME = "postgres"
-DB_USER = "postgres.wfhbxjthmkkqvcuinmnw"
+DB_USER = "postgres.eokvgfohmbcoyisuptdp"
 DB_PASSWORD = "butcheableng"
 DB_PORT = "5432"
 
