@@ -1,9 +1,10 @@
 """
-Kobo Webhook Receiver API - Lightweight Version
+Kobo Webhook Receiver API - GPS FIXED
 """
 from flask import Flask, request, jsonify
 import psycopg2
 import os
+import signal
 from datetime import datetime
 
 app = Flask(__name__)
@@ -26,11 +27,11 @@ def get_db_connection():
     )
 
 def parse_gps(gps_str):
-    """Parse GPS string like '11.565229 104.915439 0 0'"""
+    """Parse GPS string like '11.56376 104.911428 0 0'"""
     if not gps_str:
         return None, None
     try:
-        parts = gps_str.strip().split()
+        parts = str(gps_str).strip().split()
         if len(parts) >= 2:
             return float(parts[0]), float(parts[1])
     except:
@@ -41,20 +42,24 @@ def parse_gps(gps_str):
 def kobo_webhook():
     try:
         data = request.json
+        print(f"📥 Received webhook at {datetime.now()}")
         
         # Parse GPS
         lat, lon = parse_gps(data.get('gps'))
+        if lat and lon:
+            print(f"   📍 GPS: {lat}, {lon}")
         
         # Convert retail price
         retail_khr = data.get('price_rt_sell')
         retail_usd = None
         if retail_khr:
             retail_usd = round(float(retail_khr) / KHR_TO_USD, 2)
-            print(f"💱 {retail_khr} KHR → ${retail_usd} USD")
+            print(f"   💱 {retail_khr} KHR → ${retail_usd} USD")
         
         conn = get_db_connection()
         cursor = conn.cursor()
         
+        # Make sure GPS columns are included!
         cursor.execute("""
             INSERT INTO price_monitoring (
                 submission_time, survey_date, province, 
@@ -66,7 +71,8 @@ def kobo_webhook():
             datetime.now(),
             data.get('enter_date'),
             data.get('province'),
-            lat, lon,
+            lat,           # ← GPS Latitude
+            lon,           # ← GPS Longitude
             data.get('outlet_types'),
             data.get('product_type'),
             data.get('brand'),
@@ -82,11 +88,11 @@ def kobo_webhook():
         cursor.close()
         conn.close()
         
-        print(f"✅ Inserted: {data.get('product_type')} - {data.get('brand')}")
+        print(f"   ✅ Inserted: {data.get('product_type')} - {data.get('brand')}")
         return jsonify({"status": "success"}), 200
         
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"   ❌ Error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/health', methods=['GET'])
