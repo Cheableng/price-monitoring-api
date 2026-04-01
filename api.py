@@ -1,6 +1,5 @@
 """
-Kobo Webhook Receiver API
-Receives data from Kobo and inserts into Supabase
+Kobo Webhook Receiver API - Lightweight Version
 """
 from flask import Flask, request, jsonify
 import psycopg2
@@ -15,12 +14,9 @@ DB_NAME = "postgres"
 DB_USER = "postgres.eokvgfohmbcoyisuptdp"
 DB_PASSWORD = "butcheableng"
 DB_PORT = "5432"
-
-# Currency conversion
 KHR_TO_USD = 4000
 
 def get_db_connection():
-    """Create database connection"""
     return psycopg2.connect(
         host=DB_HOST,
         database=DB_NAME,
@@ -29,101 +25,74 @@ def get_db_connection():
         port=DB_PORT
     )
 
+def parse_gps(gps_str):
+    """Parse GPS string like '11.565229 104.915439 0 0'"""
+    if not gps_str:
+        return None, None
+    try:
+        parts = gps_str.strip().split()
+        if len(parts) >= 2:
+            return float(parts[0]), float(parts[1])
+    except:
+        pass
+    return None, None
+
 @app.route('/webhook', methods=['POST'])
 def kobo_webhook():
-    """
-    Endpoint that Kobo calls when a new submission is made
-    """
     try:
-        # Get data from Kobo webhook
         data = request.json
-        print(f"📥 Received webhook at {datetime.now()}")
-        print(f"📦 Data: {data}")
         
-        # Extract fields (adjust these based on your Kobo form)
-        submission = {
-            'submission_time': datetime.now(),
-            'survey_date': data.get('enter_date'),
-            'province': data.get('province'),
-            'outlet_type': data.get('outlet_types'),
-            'product_type': data.get('product_type'),
-            'brand': data.get('brand'),
-            'sku': data.get('sku'),
-            'package_type': data.get('package'),
-            'unit_per_ctn': data.get('unit_per_ctn'),
-            'price_ws_buy_ctn': data.get('price_ws_buy'),
-            'price_ws_sell_ctn': data.get('price_ws_sell'),
-            'price_rt_sell_unit': data.get('price_rt_sell')
-        }
+        # Parse GPS
+        lat, lon = parse_gps(data.get('gps'))
         
-        # Convert KHR to USD if needed
-        if submission['price_rt_sell_unit']:
-            try:
-                price_khr = float(submission['price_rt_sell_unit'])
-                submission['price_rt_sell_unit'] = round(price_khr / KHR_TO_USD, 2)
-                print(f"   💱 Converted: {price_khr} KHR → ${submission['price_rt_sell_unit']} USD")
-            except:
-                pass
+        # Convert retail price
+        retail_khr = data.get('price_rt_sell')
+        retail_usd = None
+        if retail_khr:
+            retail_usd = round(float(retail_khr) / KHR_TO_USD, 2)
+            print(f"💱 {retail_khr} KHR → ${retail_usd} USD")
         
-        # Insert into database
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        insert_query = """
-        INSERT INTO price_monitoring (
-            submission_time, survey_date, province, outlet_type,
-            product_type, brand, sku, package_type,
-            unit_per_ctn, price_ws_buy_ctn, price_ws_sell_ctn, price_rt_sell_unit
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """
-        
-        cursor.execute(insert_query, (
-            submission['submission_time'],
-            submission['survey_date'],
-            submission['province'],
-            submission['outlet_type'],
-            submission['product_type'],
-            submission['brand'],
-            submission['sku'],
-            submission['package_type'],
-            submission['unit_per_ctn'],
-            submission['price_ws_buy_ctn'],
-            submission['price_ws_sell_ctn'],
-            submission['price_rt_sell_unit']
+        cursor.execute("""
+            INSERT INTO price_monitoring (
+                submission_time, survey_date, province, 
+                gps_latitude, gps_longitude, outlet_type,
+                product_type, brand, sku, package_type,
+                unit_per_ctn, price_ws_buy_ctn, price_ws_sell_ctn, price_rt_sell_unit
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            datetime.now(),
+            data.get('enter_date'),
+            data.get('province'),
+            lat, lon,
+            data.get('outlet_types'),
+            data.get('product_type'),
+            data.get('brand'),
+            data.get('sku'),
+            data.get('package'),
+            data.get('unit_per_ctn'),
+            data.get('price_ws_buy'),
+            data.get('price_ws_sell'),
+            retail_usd
         ))
         
         conn.commit()
         cursor.close()
         conn.close()
         
-        print(f"   ✅ Inserted: {submission['product_type']} - {submission['brand']}")
-        
-        return jsonify({"status": "success", "message": "Data inserted"}), 200
+        print(f"✅ Inserted: {data.get('product_type')} - {data.get('brand')}")
+        return jsonify({"status": "success"}), 200
         
     except Exception as e:
-        print(f"   ❌ Error: {e}")
+        print(f"❌ Error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint"""
-    return jsonify({"status": "healthy", "message": "API is running"}), 200
-
-@app.route('/test', methods=['GET'])
-def test():
-    """Test endpoint"""
-    return jsonify({
-        "status": "ok",
-        "message": "Webhook receiver is ready",
-        "endpoints": {
-            "/webhook": "POST - Receive Kobo submissions",
-            "/health": "GET - Health check",
-            "/test": "GET - Test endpoint"
-        }
-    }), 200
+    return jsonify({"status": "healthy"}), 200
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 Starting Kobo Webhook Receiver on port {port}")
-    print(f"   Webhook URL: http://localhost:{port}/webhook")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
