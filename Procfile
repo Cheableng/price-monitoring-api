@@ -1,0 +1,1 @@
+web: waitress-serve --port=8080 --threads=1 api:app
